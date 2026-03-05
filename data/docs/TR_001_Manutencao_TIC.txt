@@ -1,0 +1,95 @@
+FUNDAÇÃO DE SAÚDE P. HORAES
+TERMO DE REFERÊNCIA (TR)
+
+1. OBJETO
+Contratação de empresa especializada para prestação de serviços de suporte técnico, manutenção preventiva e corretiva de equipamentos de informática, rede local e periféricos, incluindo atendimento presencial e remoto, para a Unidade Matriz e unidades vinculadas da Fundação de Saúde P. Horaes.
+
+2. JUSTIFICATIVA
+A Fundação possui operações administrativas e assistenciais com dependência direta de infraestrutura de TI (computadores, rede, impressoras e sistemas). Interrupções afetam atendimento ao público, emissão de documentos, rotinas internas e acesso a sistemas corporativos. O serviço visa garantir continuidade operacional e padronização de atendimento.
+
+3. ESCOPO DOS SERVIÇOS
+3.1 Atendimento de suporte (helpdesk) a usuários:
+- Diagnóstico de incidentes em software e hardware
+- Configuração de estações Windows 10/11
+- Instalação e atualização de aplicações autorizadas
+- Suporte a impressoras, scanners, nobreaks e periféricos
+
+3.2 Rede e conectividade:
+- Diagnóstico de problemas de LAN/Wi-Fi
+- Verificação de cabeamento e pontos de rede
+- Configuração básica de roteadores/switches já existentes (sem fornecimento de equipamentos)
+
+3.3 Manutenção preventiva (mensal):
+- Limpeza interna e externa de PCs (sem troca de peças)
+- Verificação de integridade de disco e memória
+- Verificação de logs, antivirus corporativo e atualizações
+
+3.4 Manutenção corretiva:
+- Substituição de peças fornecidas pela Fundação (quando aplicável)
+- Reinstalação de sistema operacional (quando autorizado)
+
+4. QUANTITATIVO ESTIMADO
+- 120 computadores (desktop)
+- 35 notebooks
+- 25 impressoras
+- 10 switches
+- 20 pontos Wi-Fi (APs)
+Obs.: Quantitativo estimado, podendo variar conforme necessidade sem alteração do objeto.
+
+5. REQUISITOS TÉCNICOS
+- Equipe com no mínimo 1 técnico nível pleno e 1 técnico nível júnior
+- Registro de chamados obrigatório (sistema de chamados ou planilha padronizada)
+- Atendimento remoto via ferramenta segura e autorizada
+- Procedimentos com controle de acesso e confidencialidade (dados sensíveis)
+
+6. SLA (NÍVEIS DE SERVIÇO)
+- Horário de atendimento: segunda a sexta, 08h às 17h
+- Tempo de resposta (abertura do chamado):
+  * Crítico (rede geral fora / setor parado): até 1 hora
+  * Alto (1 setor parado): até 2 horas
+  * Médio (1 usuário): até 4 horas
+  * Baixo (dúvida/config): até 8 horas
+- Atendimento presencial quando necessário:
+  * Crítico: até 4 horas
+  * Alto: até 8 horas
+
+7. ENTREGÁVEIS
+- Relatório mensal com:
+  * Quantidade de chamados por categoria
+  * Tempo médio de atendimento e solução
+  * Equipamentos atendidos
+  * Recomendações preventivas
+- Plano de manutenção preventiva mensal
+
+8. CRITÉRIOS DE ACEITE
+- Chamados com registro completo (descrição, data/hora, solução)
+- Cumprimento de SLA mínimo de 90% mensal
+- Relatório mensal entregue até o 5º dia útil do mês subsequente
+
+9. GARANTIA E SUPORTE
+- Garantia de 30 dias sobre o serviço executado (não inclui peças)
+- Reabertura do chamado sem custo se reincidência do mesmo problema no período
+
+10. OBRIGAÇÕES DA CONTRATADA
+- Manter equipe disponível no horário estabelecido
+- Manter sigilo e confidencialidade de dados
+- Não instalar softwares sem autorização formal
+- Comunicar necessidade de troca de peças com laudo técnico
+
+11. OBRIGAÇÕES DA CONTRATANTE
+- Disponibilizar acesso aos ambientes e equipamentos
+- Fornecer peças quando necessário
+- Definir softwares autorizados e política interna
+
+12. PENALIDADES
+- Descumprimento de SLA: multa de 0,5% do valor mensal por ocorrência, limitada a 10% no mês
+- Reincidência de falhas graves: possibilidade de rescisão conforme contrato
+
+13. PRAZO
+Vigência inicial de 12 meses, podendo ser prorrogado conforme legislação e interesse público.
+
+14. CRITÉRIO DE JULGAMENTO
+Menor preço global mensal, desde que atendidos todos os requisitos técnicos e de SLA.
+
+15. DISPOSIÇÕES FINAIS
+A empresa deverá realizar visita técnica prévia, se solicitada, para levantamento de ambiente.

@@ -1,0 +1,49 @@
+FUNDAÇÃO DE SAÚDE P. HORAES
+TERMO DE REFERÊNCIA (TR)
+
+1. OBJETO
+Aquisição de notebooks e monitores para modernização do parque tecnológico da Fundação, visando padronização e aumento de desempenho em atividades administrativas.
+
+2. JUSTIFICATIVA
+Equipamentos atuais apresentam lentidão e falhas, impactando produtividade e disponibilidade de sistemas internos. A aquisição busca reduzir indisponibilidade, melhorar desempenho e permitir mobilidade para equipes técnicas e administrativas.
+
+3. ITENS E ESPECIFICAÇÕES
+3.1 Notebook (quantidade estimada: 25 unidades)
+- Processador: mínimo 6 núcleos / 12 threads (ou equivalente superior)
+- Memória RAM: mínimo 16 GB
+- Armazenamento: SSD mínimo 512 GB NVMe
+- Tela: 15,6" Full HD (1920x1080)
+- Conectividade: Wi-Fi, Bluetooth, 1x HDMI, mínimo 2 portas USB
+- Sistema operacional: compatível com Windows 11 Pro (licença pode ser fornecida separadamente)
+- Garantia: mínima de 12 meses onsite ou balcão autorizado
+
+3.2 Monitor (quantidade estimada: 25 unidades)
+- Tamanho: 24" (mínimo)
+- Resolução: Full HD (mínimo)
+- Entradas: HDMI (mínimo), preferencialmente DisplayPort
+- Ajuste de inclinação
+- Garantia: mínima de 12 meses
+
+4. REGRAS DE ENTREGA
+- Entrega na Unidade Matriz (Aracaju/SE) em até 20 dias corridos após empenho/ordem de fornecimento
+- Itens deverão ser novos, lacrados, sem uso e com nota fiscal
+
+5. CRITÉRIOS DE ACEITE
+- Conferência física (quantidade, integridade, lacres)
+- Conferência de especificações mínimas
+- Teste de inicialização e verificação de hardware
+- Garantia e documentação entregues
+
+6. GARANTIA E SUPORTE
+- Garantia mínima de 12 meses
+- Assistência técnica com canal de atendimento e prazo de resposta de até 5 dias úteis
+
+7. PENALIDADES
+- Atraso na entrega: multa de 0,5% ao dia sobre o valor do item em atraso, limitada a 10%
+- Entrega em desacordo: substituição obrigatória em até 10 dias corridos
+
+8. CRITÉRIO DE JULGAMENTO
+Menor preço por item, atendendo integralmente as especificações mínimas.
+
+9. OBSERVAÇÕES
+A Fundação poderá solicitar amostra técnica documental (datasheets) para validação antes da entrega.
