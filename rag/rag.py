@@ -4,7 +4,7 @@ from prompts.prompts import SYSTEM_PROMPT
 
 
 
-LLM_MODEL = "mistral"  # // Baixem tbm
+LLM_MODEL = "gemma3:1b"  # // Baixem tbm
 SYSTEM_PROMPT = SYSTEM_PROMPT
 
 
@@ -12,7 +12,7 @@ def ollama_generate(prompt: str) -> str:
     resp = requests.post(
         f"{OLLAMA_BASE}/api/generate",
         json={"model": LLM_MODEL, "prompt": prompt, "stream": False},
-        timeout=120
+        timeout=1600
     )
     resp.raise_for_status()
     return resp.json().get("response", "")
