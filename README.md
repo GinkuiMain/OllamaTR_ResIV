@@ -92,6 +92,8 @@ API disponivel em:
 - `http://127.0.0.1:8000`
 - Docs Swagger: `http://127.0.0.1:8000/docs`
 
+Ao abrir `http://127.0.0.1:8000` no navegador, voce vera uma pagina inicial com atalhos para a API e documentacao.
+
 ## 5) Indexar documentos (obrigatorio antes do chat)
 
 Coloque arquivos `.txt`, `.pdf` ou `.docx` em `data/docs` e rode:
@@ -120,6 +122,15 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/chat -ContentType "app
 - `GET /health`: status da API
 - `POST /admin/index`: indexa documentos de `data/docs`
 - `POST /chat`: gera resposta RAG com fontes
+
+## Testar endpoints com Postman ou Insomnia
+
+Se preferir testar os endpoints usando Postman ou Insomnia em vez do PowerShell:
+
+- **Postman**: https://www.postman.com/downloads/
+- **Insomnia**: https://insomnia.rest/download
+
+Ao abrir `http://127.0.0.1:8000/docs` voce tera acesso ao Swagger com exemplos de payload para todos os endpoints.
 
 ## Estrutura do projeto
 
