@@ -12,7 +12,7 @@ def ollama_generate(prompt: str) -> str:
     resp = requests.post(
         f"{OLLAMA_BASE}/api/generate",
         json={"model": LLM_MODEL, "prompt": prompt, "stream": False},
-        timeout=120
+        timeout=360
     )
     resp.raise_for_status()
     return resp.json().get("response", "")
