@@ -4,3 +4,4 @@ requests
 chromadb
 pypdf
 python-docx
+jinja2
