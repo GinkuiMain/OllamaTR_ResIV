@@ -1,10 +1,10 @@
+import os
 import requests
 from .ingest import get_collection, OLLAMA_BASE, ollama_embed
 from prompts.prompts import SYSTEM_PROMPT
 
 
-
-LLM_MODEL = "mistral"  # // Baixem tbm
+LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "gemma3:12b")  # mistral não está disponível, use gemma3:12b
 SYSTEM_PROMPT = SYSTEM_PROMPT
 
 

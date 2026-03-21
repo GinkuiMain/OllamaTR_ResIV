@@ -1,11 +1,12 @@
 from pathlib import Path
+import os
 import requests
 import chromadb
 from chromadb.config import Settings
 from utils.loaders import load_text
 
-OLLAMA_BASE = "http://localhost:11434" # // Twins, o Ollama roda no 11434 por default
-EMBED_MODEL = "nomic-embed-text" # // Baixem no Ollama
+OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://localhost:11434")
+EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 CHROMA_DIR = "data/chroma"
 COLLECTION = "termos_referencia"
 
