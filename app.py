@@ -9,7 +9,9 @@ Endpoints:
   POST /chat            → mantido por compatibilidade; retorna texto + fontes
   GET  /health          → status da API
 """
-
+from fastapi import FastAPI, UploadFile, File
+import shutil
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -142,6 +144,38 @@ def chat(req: GenerateTRRequest):
         "answer": result.get("html", ""),
         "base_source": result.get("base_source", ""),
         "sources": result.get("sources", []),
+    }
+
+@app.post(
+    "/admin/upload-documento",
+    tags=["Administração"],
+    summary="Fazer upload de um documento",
+    description=(
+        "Recebe um arquivo (.docx, .pdf, .txt) e o salva em `data/docs`. "
+        "Após o upload, indexa automaticamente o documento na base vetorial."
+    ),
+)
+async def upload_documento(arquivo: UploadFile = File(...)):
+    """Faz upload de um documento e já o indexa no RAG."""
+    extensoes_permitidas = {".pdf", ".docx", ".txt", ".doc"}
+    extensao = Path(arquivo.filename).suffix.lower()
+
+    if extensao not in extensoes_permitidas:
+        return {
+            "ok": False,
+            "msg": f"Extensão '{extensao}' não permitida. Use: {extensoes_permitidas}"
+        }
+
+    destino = Path("data/docs") / arquivo.filename
+    with open(destino, "wb") as buffer:
+        shutil.copyfileobj(arquivo.file, buffer)
+
+    resultado = index_docs("data/docs", reset=False)
+
+    return {
+        "ok": True,
+        "arquivo": arquivo.filename,
+        "indexacao": resultado
     }
 
 
