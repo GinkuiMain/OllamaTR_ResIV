@@ -96,3 +96,39 @@ PEDIDO DO USUÁRIO:
 Redija agora o Termo de Referência completo no formato JSON acima.
 """
     return prompt
+
+
+# ---------------------------------------------------------------------------
+# Prompt para respostas conversacionais (intenção != tr_request)
+# ---------------------------------------------------------------------------
+def build_conversational_prompt(question: str) -> str:
+    """
+    Para mensagens casuais ou dúvidas sobre normas.
+    O LLM responde em texto livre, sem gerar JSON nem TR.
+    """
+    return (
+        "Você é o assistente virtual da FSPH (Fundação de Saúde Parreiras Horta), "
+        "especializado em licitações e contratos públicos.\n"
+        "Responda de forma cordial, breve e em português.\n"
+        "Se a mensagem for uma saudação ou conversa casual, responda naturalmente "
+        "e oriente o usuário sobre o que você pode fazer (gerar Termos de Referência "
+        "e responder dúvidas sobre contratos/licitações da FSPH).\n"
+        "Se for uma dúvida técnica sobre leis ou procedimentos, responda com base "
+        "no seu conhecimento sobre a Lei nº 14.133/2021 e normas correlatas.\n\n"
+        f"Mensagem do usuário: {question}"
+    )
+
+
+def build_document_query_prompt(question: str, context: str) -> str:
+    """
+    Para dúvidas sobre normas/procedimentos com contexto RAG.
+    Retorna texto livre, não JSON.
+    """
+    return (
+        "Você é o assistente jurídico-técnico da FSPH (Fundação de Saúde Parreiras Horta).\n"
+        "Responda à dúvida do usuário com base no contexto fornecido.\n"
+        "Seja objetivo, técnico e cite a base legal quando relevante.\n"
+        "Não gere um Termo de Referência — apenas responda a dúvida.\n\n"
+        f"CONTEXTO (trechos dos documentos da FSPH):\n{context}\n\n"
+        f"DÚVIDA DO USUÁRIO:\n{question}"
+    )

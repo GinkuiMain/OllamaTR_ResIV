@@ -1,19 +1,23 @@
 """
 rag.py
-Pipeline completo: busca semântica → escolha de perfil → prompt dinâmico
-→ geração pelo LLM → parse do JSON → montagem da estrutura de seções
-→ renderização HTML via Jinja2.
+Pipeline completo com classificação de intenção.
 
 Fluxo:
-  1. Embedda a pergunta e busca top-k chunks no ChromaDB
-  2. Vota no TR base mais recorrente entre os resultados
-  3. choose_profile() mapeia o TR base para um dos 3 perfis HTML
-  4. Extrai colunas reais da tabela do DOCX (via python-docx)
-  5. build_prompt() monta o prompt com seções e keys corretas para o perfil
-  6. LLM devolve JSON
-  7. _parse_llm_json() tenta limpar e parsear (LLMs às vezes adicionam ```json)
-  8. _assemble_sections() transforma o JSON nas seções que o template HTML espera
-  9. render_tr_html() gera o HTML final
+  1. classify_intent() — decide o que o usuário realmente quer
+     ├─ "conversational"  → resposta amigável, sem RAG nem TR
+     ├─ "document_query"  → RAG + resposta em texto livre
+     └─ "tr_request"      → pipeline completo de geração de TR
+
+  Pipeline de TR (apenas para tr_request):
+  2. Busca semântica no ChromaDB
+  3. Vota no TR base mais recorrente entre os chunks recuperados
+  4. choose_profile() mapeia o TR base para um dos 3 perfis HTML
+  5. Extrai colunas reais da tabela do DOCX (via python-docx)
+  6. build_prompt() monta o prompt com seções e keys corretas para o perfil
+  7. LLM devolve JSON
+  8. _parse_llm_json() limpa e parseia (LLMs às vezes adicionam ```json)
+  9. _assemble_sections() transforma o JSON nas seções que o template HTML espera
+ 10. render_tr_html() gera o HTML final
 """
 
 import re
@@ -24,18 +28,19 @@ from pathlib import Path
 
 from .ingest import get_collection, OLLAMA_BASE, ollama_embed
 from .template_profiles import TEMPLATE_PROFILES, choose_profile
+from .intent import classify_intent
 from prompts.prompts import build_prompt, _col_to_key
+from prompts.prompts import build_conversational_prompt, build_document_query_prompt
 from rag.templates_renderer import render_tr_html
 
 import docx as _docx
 
 LLM_MODEL = "mistral"
-TEMPLATES_DIR = Path("data/templates")
 DOCS_DIR = Path("data/docs")
 
 
 # ---------------------------------------------------------------------------
-# Geração via Ollama
+# Geração via Ollama (texto livre)
 # ---------------------------------------------------------------------------
 def ollama_generate(prompt: str) -> str:
     resp = requests.post(
@@ -48,13 +53,12 @@ def ollama_generate(prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Extração de colunas reais do DOCX (substitui a heurística de texto plano)
+# Extração de colunas reais do DOCX
 # ---------------------------------------------------------------------------
 def _extract_table_columns_from_docx(source_name: str) -> list:
     """
     Abre o DOCX pelo nome e retorna as colunas da primeira tabela com
-    pelo menos as células 'ITEM' e 'DESCRIÇÃO' no cabeçalho.
-    Retorna [] se não encontrar.
+    'ITEM' e 'DESCRIÇÃO' no cabeçalho. Retorna [] se não encontrar.
     """
     doc_path = DOCS_DIR / source_name
     if not doc_path.exists():
@@ -66,7 +70,6 @@ def _extract_table_columns_from_docx(source_name: str) -> list:
                 continue
             header = [c.text.strip().upper() for c in table.rows[0].cells]
             if "ITEM" in header and any("DESCRI" in h for h in header):
-                # Desduplicar (python-docx repete células de células mescladas)
                 seen, cols = set(), []
                 for h in header:
                     if h and h not in seen:
@@ -83,16 +86,13 @@ def _extract_table_columns_from_docx(source_name: str) -> list:
 # ---------------------------------------------------------------------------
 def _parse_llm_json(raw: str) -> dict:
     """
-    LLMs às vezes envolvem o JSON em ```json ... ```.
-    Tenta extrair e parsear; em último caso devolve dict vazio.
+    Remove cercas de markdown e parseia o JSON.
+    Tenta encontrar o bloco { } raiz se o parse direto falhar.
     """
-    # Remove cercas de markdown
     clean = re.sub(r"```(?:json)?", "", raw).strip()
-    # Tenta parsear direto
     try:
         return json.loads(clean)
     except json.JSONDecodeError:
-        # Tenta encontrar o primeiro { ... } de nível raiz
         m = re.search(r"\{.*\}", clean, re.DOTALL)
         if m:
             try:
@@ -108,11 +108,6 @@ def _parse_llm_json(raw: str) -> dict:
 def _assemble_sections(llm_data: dict, profile_name: str, table_columns: list) -> list:
     """
     Transforma o dict JSON do LLM na lista de seções que tr_fsph.html espera.
-
-    Cada seção tem:
-      id, title, kind, paragraphs
-    A seção 1 (opening_with_table) também tem:
-      table_columns, table_rows
     """
     profile = TEMPLATE_PROFILES.get(profile_name, TEMPLATE_PROFILES["servico_padrao"])
     col_keys = {col: _col_to_key(col) for col in table_columns}
@@ -123,12 +118,7 @@ def _assemble_sections(llm_data: dict, profile_name: str, table_columns: list) -
         kind = sec["kind"]
 
         if kind == "opening_with_table":
-            # Parágrafos de abertura (1.1, 1.2, 1.3 ...)
             paragraphs = llm_data.get("opening_paragraphs", ["A definir"])
-
-            # Linhas da tabela: o LLM retorna keys seguras (sem espaços)
-            # O template HTML itera table_columns e faz row.get(col)
-            # → precisamos converter as keys de volta para o nome original da coluna
             raw_rows = llm_data.get("table_rows", [])
             table_rows = []
             for raw_row in raw_rows:
@@ -159,10 +149,20 @@ def _assemble_sections(llm_data: dict, profile_name: str, table_columns: list) -
 
 
 # ---------------------------------------------------------------------------
-# Endpoint principal
+# Handlers por intenção
 # ---------------------------------------------------------------------------
-def rag_answer(question: str, top_k: int = 6) -> dict:
-    # 1. Busca semântica
+def _handle_conversational(question: str) -> dict:
+    """Resposta amigável sem RAG nem geração de TR."""
+    prompt = build_conversational_prompt(question)
+    message = ollama_generate(prompt)
+    return {
+        "type": "conversational",
+        "message": message,
+    }
+
+
+def _handle_document_query(question: str, top_k: int) -> dict:
+    """Dúvida técnica: faz RAG mas responde em texto livre, não gera TR."""
     col = get_collection()
     q_emb = ollama_embed([question])[0]
     res = col.query(
@@ -174,25 +174,55 @@ def rag_answer(question: str, top_k: int = 6) -> dict:
     metas = res["metadatas"][0]
     dists = res["distances"][0]
 
-    # 2. Vota no TR base mais recorrente
+    context_blocks = [
+        f"[Trecho {i} | fonte={md.get('source')}]\n{txt}"
+        for i, (txt, md) in enumerate(zip(docs, metas), start=1)
+    ]
+    context = "\n\n---\n\n".join(context_blocks)
+
+    prompt = build_document_query_prompt(question, context)
+    message = ollama_generate(prompt)
+
+    return {
+        "type": "document_query",
+        "message": message,
+        "sources": [
+            {"source": m.get("source"), "chunk": m.get("chunk"), "distance": float(d)}
+            for m, d in zip(metas, dists)
+        ],
+    }
+
+
+def _handle_tr_request(question: str, top_k: int) -> dict:
+    """Pipeline completo de geração de TR."""
+    # Busca semântica
+    col = get_collection()
+    q_emb = ollama_embed([question])[0]
+    res = col.query(
+        query_embeddings=[q_emb],
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"],
+    )
+    docs  = res["documents"][0]
+    metas = res["metadatas"][0]
+    dists = res["distances"][0]
+
+    # Vota no TR base mais recorrente
     sources = [m.get("source") for m in metas if m.get("source")]
     base_source = Counter(sources).most_common(1)[0][0] if sources else ""
 
-    # 3. Escolhe o perfil HTML
+    # Perfil HTML e colunas reais
     profile_name = choose_profile(base_source)
-
-    # 4. Colunas reais da tabela (via python-docx, não heurística de texto)
     table_columns = _extract_table_columns_from_docx(base_source)
 
-    # 5. Monta contexto
-    context_blocks = []
-    for i, (txt, md, dist) in enumerate(zip(docs, metas, dists), start=1):
-        context_blocks.append(
-            f"[Trecho {i} | fonte={md.get('source')} | chunk={md.get('chunk')} | dist={dist:.4f}]\n{txt}"
-        )
+    # Contexto
+    context_blocks = [
+        f"[Trecho {i} | fonte={md.get('source')} | chunk={md.get('chunk')} | dist={dist:.4f}]\n{txt}"
+        for i, (txt, md, dist) in enumerate(zip(docs, metas, dists), start=1)
+    ]
     context = "\n\n---\n\n".join(context_blocks)
 
-    # 6. Monta prompt dinâmico
+    # Prompt → LLM → parse → seções → HTML
     prompt = build_prompt(
         profile_name=profile_name,
         table_columns=table_columns,
@@ -200,17 +230,10 @@ def rag_answer(question: str, top_k: int = 6) -> dict:
         context=context,
         question=question,
     )
-
-    # 7. Chama o LLM
     raw_answer = ollama_generate(prompt)
-
-    # 8. Parse do JSON
     llm_data = _parse_llm_json(raw_answer)
-
-    # 9. Monta seções
     sections = _assemble_sections(llm_data, profile_name, table_columns)
 
-    # 10. Renderiza HTML
     html = render_tr_html({
         "document_title": "TERMO DE REFERÊNCIA",
         "sections": sections,
@@ -221,17 +244,34 @@ def rag_answer(question: str, top_k: int = 6) -> dict:
     })
 
     return {
+        "type": "tr",
         "html": html,
         "profile": profile_name,
         "base_source": base_source,
         "table_columns": table_columns,
-        "llm_raw": raw_answer,          # útil para debug; remova em produção
+        "llm_raw": raw_answer,
         "sources": [
-            {
-                "source": m.get("source"),
-                "chunk": m.get("chunk"),
-                "distance": float(d),
-            }
+            {"source": m.get("source"), "chunk": m.get("chunk"), "distance": float(d)}
             for m, d in zip(metas, dists)
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Ponto de entrada único
+# ---------------------------------------------------------------------------
+def rag_answer(question: str, top_k: int = 6) -> dict:
+    """
+    Classifica a intenção e roteia para o handler correto.
+    Sempre retorna um dict com o campo 'type' indicando o que foi gerado.
+    """
+    intent = classify_intent(question)
+
+    if intent == "conversational":
+        return _handle_conversational(question)
+
+    if intent == "document_query":
+        return _handle_document_query(question, top_k)
+
+    # tr_request (default)
+    return _handle_tr_request(question, top_k)

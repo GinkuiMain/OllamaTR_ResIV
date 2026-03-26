@@ -18,3 +18,5 @@ def save_tr_html(data: dict, out_path: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html, encoding="utf-8")
     return str(path)
+
+
