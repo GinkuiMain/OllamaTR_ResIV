@@ -10,7 +10,7 @@ Endpoints:
   GET  /health           → status da API
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from rag.ingest import index_docs
@@ -120,19 +120,24 @@ def generate_tr_html(req: GenerateTRRequest):
 
 @app.post("/chat", tags=["Chat"],
           summary="Interface conversacional unificada")
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, format: str = Query(default="json", pattern="^(json|html)$")):
     """
-    Endpoint principal para o frontend.
-    Aceita qualquer tipo de mensagem e retorna a resposta adequada.
+    Aceita qualquer mensagem e roteia pela intenção.
 
-    O campo 'type' na resposta indica o que foi gerado:
-      - "conversational" → campo 'message' com resposta em texto
-      - "document_query" → campo 'message' com resposta técnica + 'sources'
-      - "tr"             → campo 'html' com o TR renderizado + metadados
-
-    O frontend deve verificar 'type' para saber como exibir a resposta.
+    Parâmetro de query opcional:
+      ?format=json  (padrão) → retorna JSON com campo 'type'
+      ?format=html           → se for TR, retorna HTML renderizado direto
     """
-    return rag_answer(req.message, top_k=req.top_k)
+    result = rag_answer(req.message, top_k=req.top_k)
+
+    if format == "html":
+        if result.get("type") == "tr":
+            return HTMLResponse(content=result.get("html", "<p>Erro ao gerar TR.</p>"))
+        # Para conversational/document_query, HTML simples
+        msg = result.get("message", "")
+        return HTMLResponse(content=f"<p>{msg}</p>")
+
+    return result
 
 
 @app.get("/health", tags=["Sistema"], summary="Verificar saúde da API")
