@@ -5,3 +5,8 @@ chromadb
 pypdf
 python-docx
 jinja2
+# Auth
+psycopg2-binary
+bcrypt
+python-jose[cryptography]
+python-dotenv
