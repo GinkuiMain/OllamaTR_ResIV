@@ -16,7 +16,9 @@ from pydantic import BaseModel, Field
 
 from rag.ingest import index_docs
 from rag.rag import rag_answer
-from utils.upload_funcs.upload_documento import processar_upload  # ← import da utils
+from utils.upload_funcs.upload_documento import processar_upload
+from utils.list_funcs.listar_documento import listar_documentos
+from utils.remove_funcs.remover_documento import remover_documento
 
 app = FastAPI(
     title="FSPH - RAG + Ollama API",
@@ -83,6 +85,16 @@ def chat(req: GenerateTRRequest):
 @app.post("/admin/upload-documento", tags=["Administração"], summary="Fazer upload de um documento")
 async def upload_documento(arquivo: UploadFile = File(...)):
     return await processar_upload(arquivo)  # ← delega para a utils
+
+
+@app.get("/admin/listar-documentos", tags=["Administração"], summary="Listar documentos anexados")
+def listar_documentos_endpoint():
+    return listar_documentos()
+
+
+@app.delete("/admin/remover-documento/{nome_arquivo}", tags=["Administração"], summary="Remover documento anexado")
+def remover_documento_endpoint(nome_arquivo: str):
+    return remover_documento(nome_arquivo)
 
 
 @app.get("/health", tags=["Sistema"], summary="Verificar saúde da API")

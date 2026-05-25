@@ -1,7 +1,9 @@
-import shutil
+﻿import shutil
 from pathlib import Path
 from fastapi import UploadFile
 from rag.ingest import index_docs
+
+from utils.docs_utils import get_docs_folder, safe_filename
 
 
 async def processar_upload(arquivo: UploadFile) -> dict:
@@ -15,7 +17,9 @@ async def processar_upload(arquivo: UploadFile) -> dict:
             "msg": f"Extensão '{extensao}' não permitida. Use: {extensoes_permitidas}"
         }
 
-    destino = Path("data/docs") / arquivo.filename
+    nome_seguro = safe_filename(arquivo.filename)
+    destino = get_docs_folder() / nome_seguro
+
     with open(destino, "wb") as buffer:
         shutil.copyfileobj(arquivo.file, buffer)
 
@@ -23,6 +27,6 @@ async def processar_upload(arquivo: UploadFile) -> dict:
 
     return {
         "ok": True,
-        "arquivo": arquivo.filename,
-        "indexacao": resultado
+        "arquivo": nome_seguro,
+        "indexacao": resultado,
     }
