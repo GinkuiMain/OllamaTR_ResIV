@@ -11,37 +11,45 @@
       margin: 40px;
       color: #111;
     }
+
     h1 {
       text-align: center;
       font-size: 16pt;
       margin-bottom: 28px;
       text-transform: uppercase;
     }
+
     h2 {
       font-size: 12pt;
       margin-top: 22px;
       margin-bottom: 8px;
       text-transform: uppercase;
     }
+
     p {
       text-align: justify;
       margin: 6px 0;
       white-space: pre-line;
     }
+
     table {
       width: 100%;
       border-collapse: collapse;
       margin: 12px 0 18px;
       font-size: 11pt;
     }
+
     th, td {
       border: 1px solid #000;
       padding: 6px;
       vertical-align: top;
     }
+
     th {
       text-align: center;
+      font-weight: bold;
     }
+
     .footer {
       margin-top: 36px;
       font-size: 10pt;
@@ -55,35 +63,29 @@
   {% for section in sections %}
     <h2>{{ section.id }}. {{ section.title }}</h2>
 
-    {% if section.kind == "opening_with_table" %}
-      {% for p in section.paragraphs %}
-        <p>{{ p }}</p>
-      {% endfor %}
+    {% for item in section.content %}
+      <p>{{ item }}</p>
+    {% endfor %}
 
-      {% if section.table_columns and section.table_rows %}
-        <table>
-          <thead>
+    {% if section.table_columns and section.table_rows %}
+      <table>
+        <thead>
+          <tr>
+            {% for col in section.table_columns %}
+              <th>{{ col }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in section.table_rows %}
             <tr>
               {% for col in section.table_columns %}
-                <th>{{ col }}</th>
+                <td>{{ row.get(col, "A definir") }}</td>
               {% endfor %}
             </tr>
-          </thead>
-          <tbody>
-            {% for row in section.table_rows %}
-              <tr>
-                {% for col in section.table_columns %}
-                  <td>{{ row.get(col, "A definir") }}</td>
-                {% endfor %}
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      {% endif %}
-    {% else %}
-      {% for p in section.paragraphs %}
-        <p>{{ p }}</p>
-      {% endfor %}
+          {% endfor %}
+        </tbody>
+      </table>
     {% endif %}
   {% endfor %}
 

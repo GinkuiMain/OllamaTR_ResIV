@@ -1,162 +1,349 @@
 from pathlib import Path
 from pypdf import PdfReader
 import docx
+from docx.document import Document as DocxDocument
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 import re
 import shutil
 import subprocess
 
-# Os documentos que enviaram para a gente estão em DOC, não DOCx. Ou seja, são do office antigo. Consequentemente, vou ter que fazer uma
-# Pequena maracutaia para ler .doc.
-# Antiword é um leitor de documentos gratúito que formata o .doc.
-
 SUPPORTED = {".txt", ".pdf", ".docx", ".doc"}
 
 
-# Carregar doc via antiword (caso haja)
+def _clean(text: str) -> str:
+    text = (text or "").replace("\xa0", " ")
+    text = text.replace("\n", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
 def _load_doc_via_antiword(path: Path) -> str:
+    antiword = shutil.which("antiword")
+    if not antiword:
+        raise ValueError(
+            "Arquivo .doc detectado, mas o antiword não está instalado.\n"
+            "Solução recomendada: salvar o arquivo como .docx."
+        )
+
+    result = subprocess.run([antiword, str(path)], capture_output=True)
+    out = result.stdout
+
+    if not out:
+        return ""
+
     try:
-        antiword = shutil.which("antiword")
-        if not antiword:
-            raise ValueError(
-                "Arquivo .doc detectado, contudo o antiword não está instalado ou não foi encontrado no PATH.\n"
-                "Soluções:\n"
-                "1) Salvar o .doc como .docx (Recomendado! Pode usar o CloudConvert, por exemplo)\n"
-                "2) Instalar o antiword e tentar novamente."
-            )
-        # Caso o antiword esteja instalado, ele costuma a devolver bytes com encoding meio antigo- Ai tive que catar na internet como decodificar
-        p = subprocess.run([antiword, str(path)], capture_output=True)  # aqui, o antiword devolve bytes que precisam ser decodificados
-        out = p.stdout  # A saída em fluxo de bytes
-        # Ai agora, tentar decodificar
-        if not out:
-            return ""
-        try:
-            return out.decode('utf-8')  # Tentar UTF-8 primeiro
-        except UnicodeDecodeError:
-            return out.decode('latin-1', errors="ignore")  # Se falhar, tentar Latin-1
-    except Exception as e:
-        raise ValueError(f"Erro ao processar arquivo .doc com antiword: {e}")
-
-# Reformular load text
-def load_text(path: Path) -> str:
-    try:
-        ext = path.suffix.lower()  # Vai pegar a extensão do arquivo e diminuir-la para o código
-
-        if ext == ".txt":
-            return path.read_text(encoding='utf-8', errors="ignore")
-        if ext == ".pdf":
-            reader = PdfReader(str(path))  # As 4 linhas de código abaixo irão extrair o texto de cada página do nosso PDF
-            parts = []
-            for page in reader.pages:
-                parts.append(page.extract_text() or "")
-
-            return "\n".join(parts)
-        if ext == ".docx":
-            d = docx.Document(str(path))  # O docx é um formato mais moderno, e a biblioteca python-docx consegue ler ele sem problemas. O código abaixo extrai o texto de cada parágrafo do documento e junta tudo em uma string só.
-            return "\n".join(p.text for p in d.paragraphs)
-        if ext == ".doc":
-            return _load_doc_via_antiword(path)  # Só que ai precisa do antiword instalado e configurado no PATH do sistema
-
-        raise ValueError(f"Unsupported file type: {ext}")
-
-    except Exception as e:
-        return "Erro ao carregar arquivo {path.name}: {e}"
+        return out.decode("utf-8")
+    except UnicodeDecodeError:
+        return out.decode("latin-1", errors="ignore")
 
 
-# Adicionar mostly_upper
-def _mostly_upper(s:str) -> bool:  # Isso aqui serve para discernir se um trecho é, ou não é, um título. A ideia é que, se mais de 70% das letras forem maiúsculas, a gente considere que é um título.
-    try:
-        letters = [c for c in s if c.isalpha()]  # Vai pegar somente as letras do texto
-        if len(letters) < 5:
-            return False
-        upp = sum(1 for c in letters if c.isupper())  # Vai contar quantas letras são maiúsculas
-        return upp / len(letters) > 0.6  # Se mais de 60% das letras forem maiúsculas, considerar que é um título
-    except Exception as e:
-        print("Erro em _mostly_upper: {e}")
-        return False
+def _iter_docx_blocks(document: DocxDocument):
+    """
+    Percorre parágrafos e tabelas na ordem real em que aparecem no DOCX.
+    Isso é importante porque a tabela geralmente aparece dentro da seção 1.
+    """
+    body = document.element.body
+
+    for child in body.iterchildren():
+        if child.tag.endswith("}p"):
+            yield Paragraph(child, document)
+        elif child.tag.endswith("}tbl"):
+            yield Table(child, document)
 
 
-# Extract outline
-def extract_outline(text: str) -> list[str]:
-    # Pega só as linhas que parecem títulos. Tipo:
-    # 1. DAS CONDIÇÕES GERAIS...   2. DO MOTIVO...
-    outline =[]
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line:
+def _row_cells(row) -> list[str]:
+    cells = []
+    seen_adjacent = None
+
+    for cell in row.cells:
+        value = _clean(cell.text)
+
+        if not value:
             continue
-        m = re.match(r"^(\d{1,2})\.\s+(.+)$", line)
-        if m:
-            title = m.group(2).strip()
-            if _mostly_upper(title):
-                outline.append(f"{m.group(1)}. {title}")
-    return outline
+
+        # DOCX com célula mesclada às vezes repete o texto da célula.
+        if value == seen_adjacent:
+            continue
+
+        seen_adjacent = value
+        cells.append(value)
+
+    return cells
 
 
-# Extract table columns
-def extract_table_columns(text: str) -> list[str]:
-    # Tenta pegar colunas de tabela que aparece no item 1.1 (ITEM / DESCRIÇÃO / etc.)
-    # Retorna lista de colunas para pedir ao LLM uma tabela igual.
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    for i, line in enumerate(lines):
-        up = line.upper()
-        if "ITEM" in up and ("DESCRI" in up or "DESCRIÇÃO" in up):
-            # junta algumas linhas seguintes pois pode quebrar (ex: QUANTIDADE / ESTIMADA)
-            block = " ".join(lines[i:i+4])
-            block = re.sub(r"\s{2,}", " ", block)
-            # tenta separar por palavras-chave conhecidas
-            # fallback: retorna as palavras em caixa alta agrupadas
-            cols = []
-            # heurística por tokens comuns:
-            known = ["ITEM", "DESCRIÇÃO", "APRESENTAÇÃO", "QUANTIDADE", "ESTIMADA", "C/H", "ALUNOS", "TURMA",
-                     "VALOR", "UNITÁRIO", "TOTAL", "ESTIMADO", "POR", "GUIA", "CUSTO"]
-            tokens = block.replace(":", " ").split()
-            buff = []
-            for t in tokens:
-                tu = t.upper().strip()
-                if tu in known:
-                    buff.append(t)
-                else:
-                    # continua
-                    pass
-            # junta em frases
-            if buff:
-                joined = " ".join(buff)
-                # agrupa "QUANTIDADE ESTIMADA", "VALOR UNITÁRIO", etc.
-                joined = joined.replace("QUANTIDADE ESTIMADA", "QUANTIDADE_ESTIMADA")
-                joined = joined.replace("VALOR UNITÁRIO", "VALOR_UNITÁRIO")
-                joined = joined.replace("VALOR TOTAL", "VALOR_TOTAL")
-                parts = joined.split()
-                # reconstrução simples
-                fixed = []
-                for p in parts:
-                    p = p.replace("_", " ")
-                    if p not in fixed:
-                        fixed.append(p)
-                # garante que começa por ITEM e DESCRIÇÃO
-                if "ITEM" not in fixed:
-                    fixed.insert(0, "ITEM")
-                if "DESCRIÇÃO" not in fixed:
-                    fixed.insert(1, "DESCRIÇÃO")
-                return fixed
-            return ["ITEM", "DESCRIÇÃO"]
+def _table_to_lines(table: Table) -> list[str]:
+    lines = []
+
+    for row in table.rows:
+        cells = _row_cells(row)
+        if cells:
+            lines.append(" | ".join(cells))
+
+    return lines
+
+
+def _normalize_column_name(value: str) -> str:
+    value = _clean(value)
+    value = value.replace(" / ", " ")
+    value = value.replace("/", " ")
+    value = re.sub(r"\s+", " ", value)
+    return value.strip().upper()
+
+
+def _extract_table_columns_from_table(table: Table) -> list[str]:
+    if not table.rows:
+        return []
+
+    # Procura a primeira linha que parece cabeçalho de tabela de itens.
+    for row in table.rows[:3]:
+        cells = _row_cells(row)
+        normalized = [_normalize_column_name(c) for c in cells]
+
+        has_item = any(c == "ITEM" for c in normalized)
+        has_descricao = any("DESCRI" in c for c in normalized)
+
+        if has_item and has_descricao:
+            columns = []
+            seen = set()
+
+            for raw in cells:
+                col = _normalize_column_name(raw)
+
+                if not col:
+                    continue
+
+                if col in seen:
+                    continue
+
+                seen.add(col)
+                columns.append(col)
+
+            return columns
+
     return []
 
 
-"""
 def load_text(path: Path) -> str:
     ext = path.suffix.lower()
 
-    match ext:
-        case ".txt":
-            return path.read_text(encoding='utf-8', errors="ignore")
-        case ".pdf":
-            reader = PdfReader(str(path))
-            parts = []
-            for page in reader.pages:
-                parts.append(page.extract_text() or "")
-            return "\n".join(parts)
-        case ".docx":
-            d = docx.Document(str(path))
-            return "\n".join(p.text for p in d.paragraphs)
-    raise ValueError(f"Unsupported file type: {ext}")
-"""
+    if ext == ".txt":
+        return path.read_text(encoding="utf-8", errors="ignore")
+
+    if ext == ".pdf":
+        reader = PdfReader(str(path))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+
+    if ext == ".docx":
+        document = docx.Document(str(path))
+        parts = []
+
+        for block in _iter_docx_blocks(document):
+            if isinstance(block, Paragraph):
+                text = _clean(block.text)
+                if text:
+                    parts.append(text)
+
+            elif isinstance(block, Table):
+                parts.extend(_table_to_lines(block))
+
+        return "\n".join(parts)
+
+    if ext == ".doc":
+        return _load_doc_via_antiword(path)
+
+    raise ValueError(f"Extensão não suportada: {ext}")
+
+
+def _mostly_upper(text: str) -> bool:
+    letters = [c for c in text if c.isalpha()]
+
+    if len(letters) < 8:
+        return False
+
+    uppercase = sum(1 for c in letters if c.isupper())
+    return uppercase / len(letters) >= 0.60
+
+
+def _strip_heading_number(text: str) -> str:
+    text = _clean(text)
+    text = re.sub(r"^\d{1,2}\s*[.\-]?\s*", "", text)
+    return _clean(text)
+
+
+def _is_main_heading(text: str) -> bool:
+    text = _clean(text)
+
+    if not text:
+        return False
+
+    if text.upper() == "TERMO DE REFERÊNCIA":
+        return False
+
+    if "|" in text:
+        return False
+
+    # Não considera subitens como 4.1, 4.1.1 etc. como seção principal.
+    if re.match(r"^\d{1,2}\.\d+", text):
+        return False
+
+    without_number = _strip_heading_number(text)
+
+    if len(without_number) < 10:
+        return False
+
+    return _mostly_upper(without_number)
+
+
+def extract_template(path: Path) -> dict:
+    """
+    Extrai a estrutura do próprio documento:
+    - título
+    - seções
+    - ordem das seções
+    - tabelas e colunas
+    """
+    ext = path.suffix.lower()
+
+    template = {
+        "source": path.name,
+        "document_title": "TERMO DE REFERÊNCIA",
+        "sections": [],
+        "table_columns": [],
+    }
+
+    if ext != ".docx":
+        raw = load_text(path)
+        return _extract_template_from_text(path.name, raw)
+
+    document = docx.Document(str(path))
+
+    current_section = None
+    section_counter = 0
+
+    for block in _iter_docx_blocks(document):
+        if isinstance(block, Paragraph):
+            text = _clean(block.text)
+
+            if not text:
+                continue
+
+            if text.upper() == "TERMO DE REFERÊNCIA":
+                template["document_title"] = text.upper()
+                continue
+
+            if _is_main_heading(text):
+                if current_section:
+                    template["sections"].append(current_section)
+
+                section_counter += 1
+                current_section = {
+                    "id": str(section_counter),
+                    "title": _strip_heading_number(text),
+                    "content_sample": [],
+                    "table_columns": [],
+                }
+                continue
+
+            if current_section:
+                current_section["content_sample"].append(text)
+
+        elif isinstance(block, Table):
+            columns = _extract_table_columns_from_table(block)
+
+            if current_section and columns:
+                current_section["table_columns"] = columns
+
+                if not template["table_columns"]:
+                    template["table_columns"] = columns
+
+            elif current_section:
+                current_section["content_sample"].extend(_table_to_lines(block)[:3])
+
+    if current_section:
+        template["sections"].append(current_section)
+
+    return template
+
+
+def _extract_template_from_text(source_name: str, text: str) -> dict:
+    lines = [_clean(line) for line in text.splitlines() if _clean(line)]
+
+    template = {
+        "source": source_name,
+        "document_title": "TERMO DE REFERÊNCIA",
+        "sections": [],
+        "table_columns": extract_table_columns(text),
+    }
+
+    current = None
+    counter = 0
+
+    for line in lines:
+        if line.upper() == "TERMO DE REFERÊNCIA":
+            template["document_title"] = line.upper()
+            continue
+
+        if _is_main_heading(line):
+            if current:
+                template["sections"].append(current)
+
+            counter += 1
+            current = {
+                "id": str(counter),
+                "title": _strip_heading_number(line),
+                "content_sample": [],
+                "table_columns": template["table_columns"] if counter == 1 else [],
+            }
+            continue
+
+        if current:
+            current["content_sample"].append(line)
+
+    if current:
+        template["sections"].append(current)
+
+    return template
+
+
+def extract_outline(text: str) -> list[str]:
+    template = _extract_template_from_text("raw_text", text)
+    return [f'{s["id"]}. {s["title"]}' for s in template["sections"]]
+
+
+def extract_table_columns(text: str) -> list[str]:
+    upper = text.upper()
+
+    if "ITEM" not in upper or "DESCRI" not in upper:
+        return []
+
+    if "ALUNOS POR TURMA" in upper or "C/H" in upper:
+        return [
+            "ITEM",
+            "DESCRIÇÃO",
+            "C/H",
+            "ALUNOS POR TURMA",
+            "QUANT DE TURMAS",
+            "VALOR ESTIMADO POR TURMA (R$)",
+        ]
+
+    if "QUANTIDADE ESTIMADA" in upper or "APRESENTAÇÃO" in upper:
+        return [
+            "ITEM",
+            "DESCRIÇÃO",
+            "APRESENTAÇÃO",
+            "QUANTIDADE ESTIMADA",
+            "VALOR UNITÁRIO (R$)",
+            "VALOR TOTAL (R$)",
+        ]
+
+    if "VALOR TOTAL ESTIMADO" in upper:
+        return [
+            "ITEM",
+            "DESCRIÇÃO",
+            "QUANTIDADE",
+            "VALOR UNITÁRIO",
+            "VALOR TOTAL ESTIMADO",
+        ]
+
+    return ["ITEM", "DESCRIÇÃO"]

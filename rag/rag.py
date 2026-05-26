@@ -19,7 +19,6 @@ Fluxo:
   9. _assemble_sections() transforma o JSON nas seções que o template HTML espera
  10. render_tr_html() gera o HTML final
 """
-
 import re
 import json
 import requests
@@ -27,21 +26,19 @@ from collections import Counter
 from pathlib import Path
 
 from .ingest import get_collection, OLLAMA_BASE, ollama_embed
-from .template_profiles import TEMPLATE_PROFILES, choose_profile
 from .intent import classify_intent
-from prompts.prompts import build_prompt, _col_to_key
-from prompts.prompts import build_conversational_prompt, build_document_query_prompt
+from prompts.prompts import (
+    build_prompt,
+    _col_to_key,
+    build_conversational_prompt,
+    build_document_query_prompt,
+)
 from rag.templates_renderer import render_tr_html
 
-import docx as _docx
-
 LLM_MODEL = "mistral"
-DOCS_DIR = Path("data/docs")
+TEMPLATES_DIR = Path("data/templates")
 
 
-# ---------------------------------------------------------------------------
-# Geração via Ollama (texto livre)
-# ---------------------------------------------------------------------------
 def ollama_generate(prompt: str) -> str:
     resp = requests.post(
         f"{OLLAMA_BASE}/api/generate",
@@ -52,109 +49,178 @@ def ollama_generate(prompt: str) -> str:
     return resp.json().get("response", "")
 
 
-# ---------------------------------------------------------------------------
-# Extração de colunas reais do DOCX
-# ---------------------------------------------------------------------------
-def _extract_table_columns_from_docx(source_name: str) -> list:
-    """
-    Abre o DOCX pelo nome e retorna as colunas da primeira tabela com
-    'ITEM' e 'DESCRIÇÃO' no cabeçalho. Retorna [] se não encontrar.
-    """
-    doc_path = DOCS_DIR / source_name
-    if not doc_path.exists():
-        return []
-    try:
-        doc = _docx.Document(str(doc_path))
-        for table in doc.tables:
-            if not table.rows:
-                continue
-            header = [c.text.strip().upper() for c in table.rows[0].cells]
-            if "ITEM" in header and any("DESCRI" in h for h in header):
-                seen, cols = set(), []
-                for h in header:
-                    if h and h not in seen:
-                        seen.add(h)
-                        cols.append(table.rows[0].cells[header.index(h)].text.strip())
-                return cols
-    except Exception:
-        pass
-    return []
-
-
-# ---------------------------------------------------------------------------
-# Parse do JSON devolvido pelo LLM
-# ---------------------------------------------------------------------------
 def _parse_llm_json(raw: str) -> dict:
-    """
-    Remove cercas de markdown e parseia o JSON.
-    Tenta encontrar o bloco { } raiz se o parse direto falhar.
-    """
     clean = re.sub(r"```(?:json)?", "", raw).strip()
+
     try:
         return json.loads(clean)
     except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", clean, re.DOTALL)
-        if m:
+        match = re.search(r"\{.*\}", clean, re.DOTALL)
+
+        if match:
             try:
-                return json.loads(m.group(0))
+                return json.loads(match.group(0))
             except json.JSONDecodeError:
-                pass
+                return {}
+
     return {}
 
 
-# ---------------------------------------------------------------------------
-# Montagem das seções para o template HTML
-# ---------------------------------------------------------------------------
-def _assemble_sections(llm_data: dict, profile_name: str, table_columns: list) -> list:
-    """
-    Transforma o dict JSON do LLM na lista de seções que tr_fsph.html espera.
-    """
-    profile = TEMPLATE_PROFILES.get(profile_name, TEMPLATE_PROFILES["servico_padrao"])
-    col_keys = {col: _col_to_key(col) for col in table_columns}
+def _load_template(source_name: str) -> dict:
+    path = TEMPLATES_DIR / f"{source_name}.json"
 
-    sections = []
-    for sec in profile["sections"]:
-        sid = sec["id"]
-        kind = sec["kind"]
+    if not path.exists():
+        return {
+            "source": source_name,
+            "document_title": "TERMO DE REFERÊNCIA",
+            "sections": [],
+            "table_columns": [],
+        }
 
-        if kind == "opening_with_table":
-            paragraphs = llm_data.get("opening_paragraphs", ["A definir"])
-            raw_rows = llm_data.get("table_rows", [])
-            table_rows = []
-            for raw_row in raw_rows:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _choose_base_source(metas: list[dict]) -> str:
+    sources = [m.get("source") for m in metas if m.get("source")]
+
+    if not sources:
+        return ""
+
+    # O TR de monitoramento pode continuar indexado, mas não deve ser base de formatação
+    # quando houver outro TR disponível no resultado.
+    non_monitor_sources = [
+        s for s in sources
+        if "monitor" not in s.lower()
+    ]
+
+    chosen_pool = non_monitor_sources or sources
+
+    return Counter(chosen_pool).most_common(1)[0][0]
+
+
+def _normalize_template_sections(template: dict) -> list[dict]:
+    sections = template.get("sections") or []
+
+    normalized = []
+
+    for idx, section in enumerate(sections, start=1):
+        normalized.append({
+            "id": str(section.get("id") or idx),
+            "title": section.get("title") or f"SEÇÃO {idx}",
+            "table_columns": section.get("table_columns") or [],
+        })
+
+    return normalized
+
+
+def _get_main_table_columns(template: dict) -> list[str]:
+    for section in template.get("sections", []):
+        columns = section.get("table_columns") or []
+
+        if columns:
+            return columns
+
+    return template.get("table_columns") or []
+
+
+def _build_error_response(message: str) -> dict:
+    html = f"""
+    <html lang="pt-BR">
+      <head>
+        <meta charset="utf-8">
+        <title>Assistente FSPH</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; margin: 40px;">
+        <h2>Não foi possível gerar o Termo de Referência</h2>
+        <p>{message}</p>
+      </body>
+    </html>
+    """
+
+    return {
+        "type": "error",
+        "message": message,
+        "html": html,
+        "sources": [],
+    }
+
+
+def _assemble_sections(
+    *,
+    template_sections: list[dict],
+    llm_data: dict,
+    table_columns: list[str],
+) -> list[dict]:
+    llm_sections = llm_data.get("sections") or {}
+    raw_table_rows = llm_data.get("table_rows") or []
+
+    assembled = []
+
+    for section in template_sections:
+        section_id = str(section["id"])
+        content = llm_sections.get(section_id) or ["A definir"]
+
+        if isinstance(content, str):
+            content = [content]
+
+        clean_content = [
+            str(item).strip()
+            for item in content
+            if str(item).strip()
+        ]
+
+        if not clean_content:
+            clean_content = ["A definir"]
+
+        rendered_section = {
+            "id": section_id,
+            "title": section["title"],
+            "content": clean_content,
+            "table_columns": [],
+            "table_rows": [],
+        }
+
+        section_has_table = bool(section.get("table_columns"))
+
+        if section_has_table:
+            rendered_section["table_columns"] = table_columns
+
+            col_map = {
+                col: _col_to_key(col)
+                for col in table_columns
+            }
+
+            rows = []
+
+            for raw_row in raw_table_rows:
                 row = {}
-                for col, key in col_keys.items():
-                    row[col] = raw_row.get(key, raw_row.get(col, "A definir"))
-                table_rows.append(row)
 
-            sections.append({
-                "id": sid,
-                "title": sec["title"],
-                "kind": kind,
-                "paragraphs": paragraphs,
-                "table_columns": table_columns,
-                "table_rows": table_rows,
-            })
-        else:
-            key = f"section_{sid}_paragraphs"
-            paragraphs = llm_data.get(key, ["A definir"])
-            sections.append({
-                "id": sid,
-                "title": sec["title"],
-                "kind": kind,
-                "paragraphs": paragraphs,
-            })
+                for col, key in col_map.items():
+                    row[col] = (
+                        raw_row.get(key)
+                        or raw_row.get(col)
+                        or "A definir"
+                    )
 
-    return sections
+                rows.append(row)
+
+            if not rows and table_columns:
+                rows.append({
+                    col: "A definir"
+                    for col in table_columns
+                })
+
+            rendered_section["table_rows"] = rows
+
+        assembled.append(rendered_section)
+
+    return assembled
 
 
-# ---------------------------------------------------------------------------
-# Handlers por intenção
-# ---------------------------------------------------------------------------
 def _handle_conversational(question: str) -> dict:
-    """Resposta amigável sem RAG nem geração de TR."""
     prompt = build_conversational_prompt(question)
     message = ollama_generate(prompt)
+
     return {
         "type": "conversational",
         "message": message,
@@ -162,15 +228,17 @@ def _handle_conversational(question: str) -> dict:
 
 
 def _handle_document_query(question: str, top_k: int) -> dict:
-    """Dúvida técnica: faz RAG mas responde em texto livre, não gera TR."""
-    col = get_collection()
+    collection = get_collection()
+
     q_emb = ollama_embed([question])[0]
-    res = col.query(
+
+    res = collection.query(
         query_embeddings=[q_emb],
         n_results=top_k,
         include=["documents", "metadatas", "distances"],
     )
-    docs  = res["documents"][0]
+
+    docs = res["documents"][0]
     metas = res["metadatas"][0]
     dists = res["distances"][0]
 
@@ -178,6 +246,7 @@ def _handle_document_query(question: str, top_k: int) -> dict:
         f"[Trecho {i} | fonte={md.get('source')}]\n{txt}"
         for i, (txt, md) in enumerate(zip(docs, metas), start=1)
     ]
+
     context = "\n\n---\n\n".join(context_blocks)
 
     prompt = build_document_query_prompt(question, context)
@@ -187,55 +256,75 @@ def _handle_document_query(question: str, top_k: int) -> dict:
         "type": "document_query",
         "message": message,
         "sources": [
-            {"source": m.get("source"), "chunk": m.get("chunk"), "distance": float(d)}
+            {
+                "source": m.get("source"),
+                "chunk": m.get("chunk"),
+                "distance": float(d),
+            }
             for m, d in zip(metas, dists)
         ],
     }
 
 
 def _handle_tr_request(question: str, top_k: int) -> dict:
-    """Pipeline completo de geração de TR."""
-    # Busca semântica
-    col = get_collection()
+    collection = get_collection()
+
     q_emb = ollama_embed([question])[0]
-    res = col.query(
+
+    res = collection.query(
         query_embeddings=[q_emb],
         n_results=top_k,
         include=["documents", "metadatas", "distances"],
     )
-    docs  = res["documents"][0]
+
+    docs = res["documents"][0]
     metas = res["metadatas"][0]
     dists = res["distances"][0]
 
-    # Vota no TR base mais recorrente
-    sources = [m.get("source") for m in metas if m.get("source")]
-    base_source = Counter(sources).most_common(1)[0][0] if sources else ""
+    base_source = _choose_base_source(metas)
+    template = _load_template(base_source)
 
-    # Perfil HTML e colunas reais
-    profile_name = choose_profile(base_source)
-    table_columns = _extract_table_columns_from_docx(base_source)
+    template_sections = _normalize_template_sections(template)
 
-    # Contexto
+    if not template_sections:
+        return _build_error_response(
+            "O TR base foi encontrado, mas a estrutura do documento ainda não foi extraída. "
+            "Reindexe os documentos em /admin/index?reset=true."
+        )
+
+    table_columns = _get_main_table_columns(template)
+
     context_blocks = [
         f"[Trecho {i} | fonte={md.get('source')} | chunk={md.get('chunk')} | dist={dist:.4f}]\n{txt}"
         for i, (txt, md, dist) in enumerate(zip(docs, metas, dists), start=1)
     ]
+
     context = "\n\n---\n\n".join(context_blocks)
 
-    # Prompt → LLM → parse → seções → HTML
     prompt = build_prompt(
-        profile_name=profile_name,
-        table_columns=table_columns,
         base_source=base_source,
+        sections=template_sections,
+        table_columns=table_columns,
         context=context,
         question=question,
     )
+
     raw_answer = ollama_generate(prompt)
     llm_data = _parse_llm_json(raw_answer)
-    sections = _assemble_sections(llm_data, profile_name, table_columns)
+
+    if not llm_data:
+        return _build_error_response(
+            "O modelo não retornou JSON válido. Tente detalhar melhor o objeto da contratação."
+        )
+
+    sections = _assemble_sections(
+        template_sections=template_sections,
+        llm_data=llm_data,
+        table_columns=table_columns,
+    )
 
     html = render_tr_html({
-        "document_title": "TERMO DE REFERÊNCIA",
+        "document_title": template.get("document_title") or "TERMO DE REFERÊNCIA",
         "sections": sections,
         "footer_text": (
             "Fundação de Saúde Parreiras Horta – FSPH | "
@@ -246,25 +335,21 @@ def _handle_tr_request(question: str, top_k: int) -> dict:
     return {
         "type": "tr",
         "html": html,
-        "profile": profile_name,
         "base_source": base_source,
         "table_columns": table_columns,
         "llm_raw": raw_answer,
         "sources": [
-            {"source": m.get("source"), "chunk": m.get("chunk"), "distance": float(d)}
+            {
+                "source": m.get("source"),
+                "chunk": m.get("chunk"),
+                "distance": float(d),
+            }
             for m, d in zip(metas, dists)
         ],
     }
 
 
-# ---------------------------------------------------------------------------
-# Ponto de entrada único
-# ---------------------------------------------------------------------------
 def rag_answer(question: str, top_k: int = 6) -> dict:
-    """
-    Classifica a intenção e roteia para o handler correto.
-    Sempre retorna um dict com o campo 'type' indicando o que foi gerado.
-    """
     intent = classify_intent(question)
 
     if intent == "conversational":
@@ -273,5 +358,4 @@ def rag_answer(question: str, top_k: int = 6) -> dict:
     if intent == "document_query":
         return _handle_document_query(question, top_k)
 
-    # tr_request (default)
     return _handle_tr_request(question, top_k)

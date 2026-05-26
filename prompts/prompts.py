@@ -1,134 +1,132 @@
-"""
-prompts.py
-Gera o SYSTEM_PROMPT dinamicamente com base no perfil do TR escolhido.
-
-Por que dinâmico?
-- servico_padrao tem 14 seções e tabela com 6 colunas (BRINDES / CURSOS)
-- bens         tem 14 seções, seção 6 diferente, tabela com 5 colunas (MOBILIÁRIO)
-- evento_curto tem  9 seções e tabela com 4 colunas (HEMO)
-Um prompt único com keys fixas confundia o LLM nos perfis menores.
-"""
-
+import json
 import re
-from rag.template_profiles import TEMPLATE_PROFILES
 
 
-# ---------------------------------------------------------------------------
-# Mapeamento: nome da coluna → key JSON segura (sem espaços, sem parênteses)
-# ---------------------------------------------------------------------------
 def _col_to_key(col: str) -> str:
-    """'VALOR UNITÁRIO (R$)' → 'VALOR_UNITARIO_RS'"""
-    s = col.upper()
-    s = re.sub(r"[^A-Z0-9 ]", "", s)
-    s = s.strip().replace(" ", "_")
-    return s
+    """
+    Converte nome de coluna em chave JSON segura.
+
+    Ex:
+    "VALOR UNITÁRIO (R$)" -> "VALOR_UNITARIO_RS"
+    """
+    text = col.upper()
+    text = (
+        text.replace("Á", "A")
+        .replace("À", "A")
+        .replace("Â", "A")
+        .replace("Ã", "A")
+        .replace("É", "E")
+        .replace("Ê", "E")
+        .replace("Í", "I")
+        .replace("Ó", "O")
+        .replace("Ô", "O")
+        .replace("Õ", "O")
+        .replace("Ú", "U")
+        .replace("Ç", "C")
+    )
+    text = re.sub(r"[^A-Z0-9 ]", "", text)
+    text = re.sub(r"\s+", "_", text.strip())
+    return text
 
 
 def build_prompt(
-    profile_name: str,
-    table_columns: list,
+    *,
     base_source: str,
+    sections: list[dict],
+    table_columns: list[str],
     context: str,
     question: str,
 ) -> str:
-    """
-    Monta o SYSTEM_PROMPT completo com:
-    - seções corretas para o perfil escolhido
-    - keys JSON derivadas das colunas reais da tabela
-    - instruções anti-alucinação
-    """
-    profile = TEMPLATE_PROFILES.get(profile_name, TEMPLATE_PROFILES["servico_padrao"])
-    sections = profile["sections"]
+    section_schema = {
+        section["id"]: ["..."]
+        for section in sections
+    }
 
-    # --- bloco de seções (todas exceto a 1, que tem campos próprios) -------
-    sections_list = "\n".join(
-        f'  "section_{s["id"]}_paragraphs": ["..."]  // {s["title"]}'
-        for s in sections
-        if s["kind"] != "opening_with_table"
+    table_schema = []
+    if table_columns:
+        table_schema = [
+            {
+                _col_to_key(col): "..."
+                for col in table_columns
+            }
+        ]
+
+    expected_json = {
+        "sections": section_schema,
+        "table_rows": table_schema,
+        "footer_text": "",
+    }
+
+    section_list = "\n".join(
+        f'{section["id"]}. {section["title"]}'
+        for section in sections
     )
 
-    # --- bloco da tabela ---------------------------------------------------
     if table_columns:
-        col_keys = {col: _col_to_key(col) for col in table_columns}
-        col_mapping = "\n".join(f'    "{k}": "..."' for k in col_keys.values())
-        table_block = f"""  "table_rows": [
-    {{
-{col_mapping}
-    }}
-  ],"""
-        col_hint = (
-            "COLUNAS DA TABELA (use exatamente estas keys no JSON):\n"
-            + "\n".join(f'  "{col}" → key JSON: "{key}"'
-                        for col, key in col_keys.items())
+        column_mapping = "\n".join(
+            f'- "{col}" deve ser preenchida usando a chave JSON "{_col_to_key(col)}"'
+            for col in table_columns
         )
     else:
-        table_block = '  "table_rows": [],'
-        col_hint = "Esta contratação não possui tabela de itens."
+        column_mapping = "Este modelo não possui tabela de itens."
 
-    prompt = f"""Você é o assistente jurídico-técnico da FSPH (Fundação de Saúde Parreiras Horta).
-Sua tarefa é gerar um Termo de Referência completo baseado no pedido do usuário e no contexto fornecido.
+    return f"""
+Você é o assistente técnico-jurídico da Fundação de Saúde Parreiras Horta.
 
-REGRAS ABSOLUTAS:
-1. Retorne SOMENTE JSON válido, sem markdown, sem texto fora do JSON.
-2. Não invente fatos fora do CONTEXTO. Se faltar informação, escreva "A definir".
-3. Não altere os títulos das seções — eles estão fixos no sistema.
-4. A escrita deve ser formal, técnica e jurídica, seguindo a Lei nº 14.133/2021.
-5. Cada item de lista de parágrafos deve ser uma string completa, nunca vazia.
+Sua tarefa é preencher os campos variáveis de um Termo de Referência.
 
-PERFIL DO TR: {profile_name}
-TR BASE (modelo de estilo): {base_source}
+IMPORTANTE:
+A estrutura do documento já foi extraída do TR oficial "{base_source}".
+Você NÃO deve criar novas seções.
+Você NÃO deve remover seções.
+Você NÃO deve alterar títulos.
+Você deve apenas preencher o conteúdo textual de cada seção.
 
-{col_hint}
+REGRAS:
+1. Retorne SOMENTE JSON válido.
+2. Não use markdown.
+3. Não escreva explicações fora do JSON.
+4. Não invente dados fora do contexto.
+5. Quando faltar informação, escreva "A definir".
+6. Cada seção deve conter uma lista de strings.
+7. Evite repetir exatamente o mesmo texto em várias seções.
+8. Use linguagem formal, objetiva e compatível com Termo de Referência.
+
+SEÇÕES EXTRAÍDAS DO TR BASE:
+{section_list}
+
+COLUNAS DA TABELA:
+{column_mapping}
 
 FORMATO JSON ESPERADO:
-{{
-  "opening_paragraphs": ["Parágrafo 1.1 ...", "Parágrafo 1.2 ...", "Parágrafo 1.3 ..."],
-{table_block}
-{sections_list}
-}}
+{json.dumps(expected_json, ensure_ascii=False, indent=2)}
 
-CONTEXTO (trechos recuperados dos TRs oficiais da FSPH):
+CONTEXTO RECUPERADO:
 {context}
 
 PEDIDO DO USUÁRIO:
 {question}
 
-Redija agora o Termo de Referência completo no formato JSON acima.
-"""
-    return prompt
+Retorne agora somente o JSON válido.
+""".strip()
 
 
-# ---------------------------------------------------------------------------
-# Prompt para respostas conversacionais (intenção != tr_request)
-# ---------------------------------------------------------------------------
 def build_conversational_prompt(question: str) -> str:
-    """
-    Para mensagens casuais ou dúvidas sobre normas.
-    O LLM responde em texto livre, sem gerar JSON nem TR.
-    """
     return (
-        "Você é o assistente virtual da FSPH (Fundação de Saúde Parreiras Horta), "
-        "especializado em licitações e contratos públicos.\n"
+        "Você é o assistente virtual da Fundação de Saúde Parreiras Horta, "
+        "especializado em Termos de Referência, contratações públicas e licitações.\n"
         "Responda de forma cordial, breve e em português.\n"
-        "Se a mensagem for uma saudação ou conversa casual, responda naturalmente "
-        "e oriente o usuário sobre o que você pode fazer (gerar Termos de Referência "
-        "e responder dúvidas sobre contratos/licitações da FSPH).\n"
-        "Se for uma dúvida técnica sobre leis ou procedimentos, responda com base "
-        "no seu conhecimento sobre a Lei nº 14.133/2021 e normas correlatas.\n\n"
+        "Se a mensagem for apenas uma saudação, responda naturalmente e oriente "
+        "o usuário a descrever a contratação que deseja transformar em TR.\n\n"
         f"Mensagem do usuário: {question}"
     )
 
 
 def build_document_query_prompt(question: str, context: str) -> str:
-    """
-    Para dúvidas sobre normas/procedimentos com contexto RAG.
-    Retorna texto livre, não JSON.
-    """
     return (
-        "Você é o assistente jurídico-técnico da FSPH (Fundação de Saúde Parreiras Horta).\n"
+        "Você é o assistente técnico-jurídico da Fundação de Saúde Parreiras Horta.\n"
         "Responda à dúvida do usuário com base no contexto fornecido.\n"
-        "Seja objetivo, técnico e cite a base legal quando relevante.\n"
-        "Não gere um Termo de Referência — apenas responda a dúvida.\n\n"
-        f"CONTEXTO (trechos dos documentos da FSPH):\n{context}\n\n"
+        "Não gere um Termo de Referência. Apenas responda a dúvida.\n\n"
+        f"CONTEXTO:\n{context}\n\n"
         f"DÚVIDA DO USUÁRIO:\n{question}"
     )
