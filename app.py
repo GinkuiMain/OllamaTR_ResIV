@@ -2,6 +2,8 @@
 app.py
 API FastAPI da FSPH — RAG + Ollama + geração de TR em HTML + Autenticação.
 
+python -m uvicorn app:app --reload --host 127.0.0.1 --port 8000
+
 Endpoints:
   POST /auth/login       → autentica e devolve JWT
   GET  /auth/me          → retorna dados do usuário autenticado (token válido)
