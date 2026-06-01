@@ -1,6 +1,11 @@
 import json
 import re
 
+"""
+Aqui é o arquivo de personalidade / construção de prompt para o Maestro / FSPH AI
+Quando tivermos que fazer a alteração que o mentor pediu, não a empresa, de colocar uma personalidade nela, ajustaremos aqui.
+"""
+
 
 def _col_to_key(col: str) -> str:
     """
