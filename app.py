@@ -14,7 +14,7 @@ Endpoints:
   GET  /health           → status da API
 """
 
-from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi import FastAPI, HTTPException, Query, Depends, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +23,9 @@ from rag.ingest import index_docs
 from rag.rag import rag_answer
 from auth.auth import login, require_auth, require_admin, hash_password
 from auth.schemas import LoginRequest, TokenResponse, TokenData
+from utils.upload_funcs.upload_documento import processar_upload
+from utils.list_funcs.listar_documento import listar_documentos
+from utils.remove_funcs.remover_documento import remover_documento
 
 app = FastAPI(
     title="FSPH - RAG + Ollama API",
@@ -37,6 +40,7 @@ app = FastAPI(
         {"name": "Administração", "description": "Ingestão e indexação da base documental."},
         {"name": "Geração de TR", "description": "Geração completa de Termos de Referência."},
         {"name": "Chat", "description": "Interface conversacional unificada."},
+        {"name": "Documentos", "description": "Upload, listagem e remoção de documentos."},
         {"name": "Sistema", "description": "Status e verificação operacional."},
     ],
 )
@@ -178,6 +182,42 @@ def chat(
     return result
 
 
+# Document endpoints
+# ---------------------------------------------------------------------------
+@app.post(
+    "/documentos/upload",
+    tags=["Documentos"],
+    summary="Upload de documento",
+    description="Faz upload de um documento (PDF, DOCX, TXT) e o indexa automaticamente.",
+)
+async def upload_documento(arquivo: UploadFile = File(...)):
+    """Upload de um documento para indexação."""
+    return await processar_upload(arquivo)
+
+
+@app.get(
+    "/documentos/listar",
+    tags=["Documentos"],
+    summary="Listar documentos",
+    description="Lista todos os documentos disponíveis na base.",
+)
+def listar_docs():
+    """Lista todos os documentos indexados."""
+    return listar_documentos()
+
+
+@app.delete(
+    "/documentos/{nome_arquivo}",
+    tags=["Documentos"],
+    summary="Remover documento",
+    description="Remove um documento da base e reindexa.",
+)
+def remover_doc(nome_arquivo: str):
+    """Remove um documento específico."""
+    return remover_documento(nome_arquivo)
+
+
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
