@@ -19,14 +19,15 @@ Fluxo:
   9. _assemble_sections() transforma o JSON nas seções que o template HTML espera
  10. render_tr_html() gera o HTML final
 """
-import re
 import json
-import requests
 from collections import Counter
 from pathlib import Path
 
 from .ingest import get_collection, OLLAMA_BASE, ollama_embed
 from .intent import classify_intent
+from .llm import ollama_generate, parse_llm_json
+from .conversation_store import STORE
+from . import document_editor
 from prompts.prompts import (
     build_prompt,
     _col_to_key,
@@ -35,35 +36,10 @@ from prompts.prompts import (
 )
 from rag.templates_renderer import render_tr_html
 
-LLM_MODEL = "mistral"
 TEMPLATES_DIR = Path("data/templates")
 
-
-def ollama_generate(prompt: str) -> str:
-    resp = requests.post(
-        f"{OLLAMA_BASE}/api/generate",
-        json={"model": LLM_MODEL, "prompt": prompt, "stream": False},
-        timeout=1000,
-    )
-    resp.raise_for_status()
-    return resp.json().get("response", "")
-
-
-def _parse_llm_json(raw: str) -> dict:
-    clean = re.sub(r"```(?:json)?", "", raw).strip()
-
-    try:
-        return json.loads(clean)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", clean, re.DOTALL)
-
-        if match:
-            try:
-                return json.loads(match.group(0))
-            except json.JSONDecodeError:
-                return {}
-
-    return {}
+# Alias mantido por compatibilidade com os usos internos deste arquivo.
+_parse_llm_json = parse_llm_json
 
 
 def _load_template(source_name: str) -> dict:
@@ -323,39 +299,151 @@ def _handle_tr_request(question: str, top_k: int) -> dict:
         table_columns=table_columns,
     )
 
+    document_title = template.get("document_title") or "TERMO DE REFERÊNCIA"
+    footer_text = (
+        "Fundação de Saúde Parreiras Horta – FSPH | "
+        "Documento gerado automaticamente para revisão técnica e jurídica."
+    )
+
     html = render_tr_html({
-        "document_title": template.get("document_title") or "TERMO DE REFERÊNCIA",
+        "document_title": document_title,
         "sections": sections,
-        "footer_text": (
-            "Fundação de Saúde Parreiras Horta – FSPH | "
-            "Documento gerado automaticamente para revisão técnica e jurídica."
-        ),
+        "footer_text": footer_text,
     })
+
+    sources = [
+        {
+            "source": m.get("source"),
+            "chunk": m.get("chunk"),
+            "distance": float(d),
+        }
+        for m, d in zip(metas, dists)
+    ]
 
     return {
         "type": "tr",
         "html": html,
+        "document_title": document_title,
+        "sections": sections,
+        "footer_text": footer_text,
         "base_source": base_source,
         "table_columns": table_columns,
         "llm_raw": raw_answer,
-        "sources": [
-            {
-                "source": m.get("source"),
-                "chunk": m.get("chunk"),
-                "distance": float(d),
-            }
-            for m, d in zip(metas, dists)
-        ],
+        "sources": sources,
     }
 
 
-def rag_answer(question: str, top_k: int = 6) -> dict:
-    intent = classify_intent(question)
+def _document_state_from_result(result: dict) -> dict:
+    """Extrai do resultado de _handle_tr_request o que precisa ficar guardado na conversa."""
+    return {
+        "type": "tr",
+        "document_title": result.get("document_title"),
+        "sections": result.get("sections", []),
+        "base_source": result.get("base_source"),
+        "table_columns": result.get("table_columns", []),
+        "footer_text": result.get("footer_text", ""),
+        "sources": result.get("sources", []),
+        "html": result.get("html", ""),
+    }
 
-    if intent == "conversational":
-        return _handle_conversational(question)
 
-    if intent == "document_query":
-        return _handle_document_query(question, top_k)
+def _no_active_tr_message() -> dict:
+    return {
+        "type": "conversational",
+        "message": (
+            "Ainda não há um Termo de Referência nesta conversa. "
+            "Descreva primeiro a contratação para eu gerar o TR e, depois, "
+            "podemos editá-lo tópico a tópico."
+        ),
+    }
 
-    return _handle_tr_request(question, top_k)
+
+def _handle_tr_edit(question: str, conversation_id: str) -> dict:
+    document = STORE.get_current_document(conversation_id)
+
+    if not document or document.get("type") != "tr":
+        return _no_active_tr_message()
+
+    updated, changed = document_editor.apply_edit(question, document)
+
+    if not changed:
+        return {
+            "type": "tr_update",
+            "message": (
+                "Não consegui identificar qual tópico você quer alterar. "
+                'Diga o número da seção — por exemplo: "No tópico 7, troque o fiscal".'
+            ),
+            "html": updated.get("html", ""),
+            "changed_sections": [],
+            "base_source": updated.get("base_source"),
+            "sections": updated.get("sections", []),
+        }
+
+    STORE.set_current_document(conversation_id, updated)
+
+    return {
+        "type": "tr_update",
+        "html": updated.get("html", ""),
+        "changed_sections": changed,
+        "document_title": updated.get("document_title"),
+        "base_source": updated.get("base_source"),
+        "table_columns": updated.get("table_columns", []),
+        "sections": updated.get("sections", []),
+        "sources": updated.get("sources", []),
+    }
+
+
+def _handle_tr_explain(question: str, conversation_id: str) -> dict:
+    document = STORE.get_current_document(conversation_id)
+
+    if not document or document.get("type") != "tr":
+        return _no_active_tr_message()
+
+    message, section_id = document_editor.explain_section(question, document)
+
+    return {
+        "type": "tr_explain",
+        "message": message,
+        "section_id": section_id,
+        "base_source": document.get("base_source"),
+    }
+
+
+def rag_answer(question: str, top_k: int = 6, conversation_id: str | None = None) -> dict:
+    """
+    Ponto de entrada do pipeline.
+
+    Quando `conversation_id` é fornecido (ou criado aqui), o estado da conversa
+    é mantido: o último TR gerado fica guardado e mensagens seguintes podem
+    editá-lo ou pedir explicações sem reenviar todo o contexto.
+
+    O `conversation_id` usado sempre volta no campo de mesmo nome do resultado.
+    """
+    conversation_id = STORE.ensure(conversation_id)
+    STORE.append_message(conversation_id, "user", question)
+
+    has_active_tr = STORE.has_active_tr(conversation_id)
+    intent = classify_intent(question, has_active_tr=has_active_tr)
+
+    if intent == "tr_edit_request":
+        result = _handle_tr_edit(question, conversation_id)
+
+    elif intent == "tr_explain_request":
+        result = _handle_tr_explain(question, conversation_id)
+
+    elif intent == "conversational":
+        result = _handle_conversational(question)
+
+    elif intent == "document_query":
+        result = _handle_document_query(question, top_k)
+
+    else:  # tr_request → gera um TR novo e o guarda na conversa
+        result = _handle_tr_request(question, top_k)
+        if result.get("type") == "tr":
+            STORE.set_current_document(conversation_id, _document_state_from_result(result))
+
+    result["conversation_id"] = conversation_id
+    result["intent"] = intent
+    STORE.append_message(conversation_id, "assistant", result.get("type", ""))
+
+    return result

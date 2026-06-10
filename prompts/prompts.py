@@ -135,3 +135,89 @@ def build_document_query_prompt(question: str, context: str) -> str:
         f"CONTEXTO:\n{context}\n\n"
         f"DÚVIDA DO USUÁRIO:\n{question}"
     )
+
+
+def build_edit_section_prompt(
+    *,
+    section: dict,
+    change_request: str,
+    table_columns: list[str],
+) -> str:
+    """
+    Prompt para editar UMA seção de um TR já existente.
+
+    Diferente de build_prompt (que gera o documento inteiro), aqui o modelo
+    recebe o conteúdo atual da seção e deve devolver apenas a versão atualizada,
+    aplicando somente a alteração pedida.
+    """
+    current_content = "\n".join(f"- {p}" for p in section.get("content", [])) or "(seção vazia)"
+
+    has_table = bool(table_columns)
+    if has_table:
+        col_lines = "\n".join(
+            f'- "{col}" deve usar a chave JSON "{_col_to_key(col)}"'
+            for col in table_columns
+        )
+        current_rows = json.dumps(section.get("table_rows", []), ensure_ascii=False, indent=2)
+        table_block = (
+            "\nESTA SEÇÃO TAMBÉM POSSUI UMA TABELA.\n"
+            f"Colunas e respectivas chaves JSON:\n{col_lines}\n\n"
+            f"LINHAS ATUAIS DA TABELA:\n{current_rows}\n\n"
+            'Se a alteração afetar a tabela, devolva "table_rows" com as linhas '
+            "atualizadas (use as chaves JSON acima). Se a tabela não muda, "
+            'devolva "table_rows" exatamente como está.\n'
+        )
+        expected_json = {
+            "content": ["..."],
+            "table_rows": [{_col_to_key(col): "..." for col in table_columns}],
+        }
+    else:
+        table_block = ""
+        expected_json = {"content": ["..."]}
+
+    return f"""
+Você é o assistente técnico-jurídico da Fundação de Saúde Parreiras Horta.
+Você está EDITANDO uma única seção de um Termo de Referência que já existe.
+
+SEÇÃO ALVO:
+{section.get("id")}. {section.get("title")}
+
+CONTEÚDO ATUAL DA SEÇÃO:
+{current_content}
+{table_block}
+ALTERAÇÃO SOLICITADA PELO USUÁRIO:
+{change_request}
+
+REGRAS:
+1. Aplique APENAS a alteração pedida; preserve o restante do conteúdo da seção.
+2. NÃO altere o título nem o número da seção.
+3. NÃO invente dados que o usuário não forneceu; quando faltar, use "A definir".
+4. Use linguagem formal, objetiva, compatível com Termo de Referência.
+5. Retorne SOMENTE JSON válido, sem markdown e sem explicações fora do JSON.
+6. O campo "content" deve ser uma lista de strings (um item por parágrafo).
+
+FORMATO JSON ESPERADO:
+{json.dumps(expected_json, ensure_ascii=False, indent=2)}
+
+Retorne agora somente o JSON válido.
+""".strip()
+
+
+def build_explain_section_prompt(
+    *,
+    question: str,
+    section: dict,
+    document_title: str | None = None,
+) -> str:
+    """Prompt para explicar um tópico do TR em texto corrido (sem gerar documento)."""
+    content = "\n".join(f"- {p}" for p in section.get("content", [])) or "(seção vazia)"
+
+    return (
+        "Você é o assistente técnico-jurídico da Fundação de Saúde Parreiras Horta.\n"
+        "Explique, em português claro e objetivo, o tópico indicado do Termo de Referência.\n"
+        "NÃO gere um novo documento e NÃO retorne JSON. Responda em texto corrido.\n\n"
+        f"DOCUMENTO: {document_title or 'TERMO DE REFERÊNCIA'}\n\n"
+        f"TÓPICO {section.get('id')}. {section.get('title')}\n"
+        f"CONTEÚDO DO TÓPICO:\n{content}\n\n"
+        f"PERGUNTA DO USUÁRIO:\n{question}"
+    )
