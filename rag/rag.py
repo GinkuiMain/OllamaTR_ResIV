@@ -26,7 +26,7 @@ from pathlib import Path
 from .ingest import get_collection, OLLAMA_BASE, ollama_embed
 from .intent import classify_intent
 from .llm import ollama_generate, parse_llm_json
-from .conversation_store import STORE
+from .conversation_store import STORE, derive_title
 from . import document_editor
 from prompts.prompts import (
     build_prompt,
@@ -203,7 +203,18 @@ def _handle_conversational(question: str) -> dict:
     }
 
 
-def _handle_document_query(question: str, top_k: int) -> dict:
+def _inject_session_context(context: str, extra_context: str) -> str:
+    """Prepende o contexto exclusivo da sessão (arquivos enviados no chat)."""
+    if not extra_context:
+        return context
+    bloco = (
+        "[CONTEXTO ENVIADO PELO USUÁRIO NESTA CONVERSA — priorize estas informações]\n"
+        + extra_context.strip()
+    )
+    return bloco + "\n\n---\n\n" + context if context else bloco
+
+
+def _handle_document_query(question: str, top_k: int, extra_context: str = "") -> dict:
     collection = get_collection()
 
     q_emb = ollama_embed([question])[0]
@@ -224,6 +235,7 @@ def _handle_document_query(question: str, top_k: int) -> dict:
     ]
 
     context = "\n\n---\n\n".join(context_blocks)
+    context = _inject_session_context(context, extra_context)
 
     prompt = build_document_query_prompt(question, context)
     message = ollama_generate(prompt)
@@ -242,7 +254,7 @@ def _handle_document_query(question: str, top_k: int) -> dict:
     }
 
 
-def _handle_tr_request(question: str, top_k: int) -> dict:
+def _handle_tr_request(question: str, top_k: int, extra_context: str = "") -> dict:
     collection = get_collection()
 
     q_emb = ollama_embed([question])[0]
@@ -276,6 +288,7 @@ def _handle_tr_request(question: str, top_k: int) -> dict:
     ]
 
     context = "\n\n---\n\n".join(context_blocks)
+    context = _inject_session_context(context, extra_context)
 
     prompt = build_prompt(
         base_source=base_source,
@@ -409,18 +422,77 @@ def _handle_tr_explain(question: str, conversation_id: str) -> dict:
     }
 
 
-def rag_answer(question: str, top_k: int = 6, conversation_id: str | None = None) -> dict:
+def _assistant_summary(result: dict) -> str:
+    """
+    Texto legível do turno do assistente, para ficar salvo no histórico do chat
+    (o frontend reabre a conversa e mostra isto). Para um TR, a 'resposta' é o
+    próprio documento — então guardamos uma frase curta e o HTML fica no
+    current_document.
+    """
+    tipo = result.get("type")
+
+    if tipo == "tr":
+        titulo = result.get("document_title") or "Termo de Referência"
+        return f"Gerei o {titulo}. Posso editar qualquer tópico se precisar."
+
+    if tipo == "tr_update":
+        changed = result.get("changed_sections") or []
+        if changed:
+            return "Atualizei o(s) tópico(s): " + ", ".join(str(c) for c in changed) + "."
+        # Sem alteração: houve uma mensagem de esclarecimento.
+        return result.get("message", "Não consegui identificar o tópico a alterar.")
+
+    # conversational / document_query / tr_explain / error
+    return result.get("message", "")
+
+
+def rag_answer(
+    question: str,
+    top_k: int = 6,
+    conversation_id: str | None = None,
+    user_id: int | None = None,
+) -> dict:
     """
     Ponto de entrada do pipeline.
 
-    Quando `conversation_id` é fornecido (ou criado aqui), o estado da conversa
-    é mantido: o último TR gerado fica guardado e mensagens seguintes podem
-    editá-lo ou pedir explicações sem reenviar todo o contexto.
+    O estado da conversa é PERSISTIDO (ver conversation_store.py): o TR gerado
+    fica salvo sob o `conversation_id` e mensagens seguintes podem editá-lo ou
+    pedir explicações sem reenviar o contexto. O usuário pode reabrir o chat
+    depois e continuar de onde parou.
+
+    `user_id` identifica o dono da conversa (vem do token, via app.py). É
+    obrigatório no fluxo HTTP; conversas sempre pertencem a um usuário.
+
+    Pode lançar LookupError (conversa inexistente) ou PermissionError (conversa
+    de outro usuário); o endpoint converte isso em 404/403.
 
     O `conversation_id` usado sempre volta no campo de mesmo nome do resultado.
     """
-    conversation_id = STORE.ensure(conversation_id)
+    # Modo SEM ESTADO (ex.: /generate-tr): sem usuário e sem conversa, não
+    # persiste nada — apenas roda o pipeline e devolve o resultado.
+    if user_id is None and not conversation_id:
+        intent = classify_intent(question, has_active_tr=False)
+        if intent == "conversational":
+            result = _handle_conversational(question)
+        elif intent == "document_query":
+            result = _handle_document_query(question, top_k)
+        else:
+            result = _handle_tr_request(question, top_k)
+        result["conversation_id"] = None
+        result["intent"] = intent
+        return result
+
+    is_new = not conversation_id
+    conversation_id = STORE.ensure(conversation_id, user_id)
+
+    # Conversa nova ganha um título derivado da primeira mensagem (estilo ChatGPT).
+    if is_new:
+        STORE.set_title(conversation_id, derive_title(question))
+
     STORE.append_message(conversation_id, "user", question)
+
+    # Contexto exclusivo desta sessão (arquivos enviados no chat), se houver.
+    session_context = STORE.get_context_text(conversation_id)
 
     has_active_tr = STORE.has_active_tr(conversation_id)
     intent = classify_intent(question, has_active_tr=has_active_tr)
@@ -435,15 +507,15 @@ def rag_answer(question: str, top_k: int = 6, conversation_id: str | None = None
         result = _handle_conversational(question)
 
     elif intent == "document_query":
-        result = _handle_document_query(question, top_k)
+        result = _handle_document_query(question, top_k, extra_context=session_context)
 
     else:  # tr_request → gera um TR novo e o guarda na conversa
-        result = _handle_tr_request(question, top_k)
+        result = _handle_tr_request(question, top_k, extra_context=session_context)
         if result.get("type") == "tr":
             STORE.set_current_document(conversation_id, _document_state_from_result(result))
 
     result["conversation_id"] = conversation_id
     result["intent"] = intent
-    STORE.append_message(conversation_id, "assistant", result.get("type", ""))
+    STORE.append_message(conversation_id, "assistant", _assistant_summary(result))
 
     return result
