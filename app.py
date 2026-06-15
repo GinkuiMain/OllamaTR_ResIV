@@ -16,6 +16,12 @@ Endpoints:
   PATCH  /chats/{conversation_id} → renomeia o chat
   DELETE /chats/{conversation_id} → exclui o chat (e seu histórico)
   POST /chats/{conversation_id}/contexto → anexa arquivo como contexto da sessão
+  POST /trs              → envia o TR de um chat para a esteira de revisão
+  GET  /trs              → lista os TRs gerados (Kanban; filtro/busca/paginação)
+  GET  /trs/{tr_id}      → detalhes completos do TR (fullContent, fontes, análise)
+  PATCH /trs/{tr_id}/approve → aprova o TR
+  PATCH /trs/{tr_id}/reject  → reprova o TR (motivo obrigatório)
+  POST /trs/{tr_id}/chat → chat de correção do TR (gera nova versão, volta à fila)
   GET  /health           → status da API
 """
 
@@ -38,6 +44,11 @@ from utils.upload_funcs.upload_documento import processar_upload
 from utils.list_funcs.listar_documento import listar_documentos
 from utils.remove_funcs.remover_documento import remover_documento
 from utils.loaders import load_text
+from rag.review_store import (
+    REVIEW_STORE,
+    create_from_conversation,
+    apply_correction,
+)
 
 app = FastAPI(
     title="FSPH - RAG + Ollama API",
@@ -46,12 +57,13 @@ app = FastAPI(
         "Pipeline: autenticação JWT → classificação de intenção → busca semântica "
         "→ escolha de perfil HTML → prompt dinâmico → LLM → parse JSON → Jinja2."
     ),
-    version="3.2.0",
+    version="3.3.0",
     openapi_tags=[
         {"name": "Autenticação", "description": "Login e verificação de identidade."},
         {"name": "Administração", "description": "Ingestão e indexação da base documental."},
         {"name": "Geração de TR", "description": "Geração completa de Termos de Referência."},
         {"name": "Chat", "description": "Chat conversacional persistido (multi-chat por usuário)."},
+        {"name": "Esteira de Revisão", "description": "Aprovação/reprovação de TRs gerados (Kanban) e correção via IA."},
         {"name": "Documentos", "description": "Upload, listagem e remoção de documentos."},
         {"name": "Sistema", "description": "Status e verificação operacional."},
     ],
@@ -108,6 +120,43 @@ class RenameChatRequest(BaseModel):
         max_length=200,
         description="Novo título do chat.",
         examples=["Cadeiras ergonômicas - almoxarifado"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Schemas (Esteira de Revisão)
+# ---------------------------------------------------------------------------
+class CreateTRRequest(BaseModel):
+    conversation_id: str = Field(
+        ...,
+        description=(
+            "ID do chat cujo TR atual será promovido para a esteira de revisão "
+            "(entra como 'pending'). O chat precisa já ter um TR gerado."
+        ),
+        examples=["12"],
+    )
+    category: str | None = Field(
+        default=None,
+        description="Categoria opcional. Se omitida, a IA sugere uma.",
+        examples=["Mobiliário"],
+    )
+
+
+class RejectTRRequest(BaseModel):
+    reason: str = Field(
+        ...,
+        min_length=1,
+        description="Motivo da reprovação (obrigatório).",
+        examples=["Escopo genérico. Favor especificar número de horas e perfis técnicos."],
+    )
+
+
+class CorrectionChatRequest(BaseModel):
+    message: str = Field(
+        ...,
+        min_length=1,
+        description="Instrução de ajuste do TR (ex.: 'No tópico 3, detalhe as horas').",
+        examples=["No tópico 3, especifique 200 horas e os perfis sênior e pleno."],
     )
 
 
@@ -371,6 +420,136 @@ def get_conversation(conversation_id: str, current_user: TokenData = Depends(req
 
 
 # ---------------------------------------------------------------------------
+# Esteira de Revisão de TRs (Kanban)
+# ---------------------------------------------------------------------------
+def _require_tr(tr_id: int) -> dict:
+    """Busca o TR ou levanta 404."""
+    tr = REVIEW_STORE.get(tr_id, full=True)
+    if tr is None:
+        raise HTTPException(status_code=404, detail="TR não encontrado.")
+    return tr
+
+
+@app.post(
+    "/trs",
+    tags=["Esteira de Revisão"],
+    summary="Enviar um TR para a esteira (a partir de um chat)",
+    description=(
+        "Promove o TR atual de um chat para a esteira de revisão, com status "
+        "`pending`. Captura título, categoria, prévia, conteúdo, o resumo de análise "
+        "da IA (`analysisSummary`) e as fontes utilizadas (`sourceDocuments`).\n\n"
+        "Requer login. O chat informado precisa pertencer ao usuário e já ter um TR gerado."
+    ),
+)
+def create_tr(req: CreateTRRequest, current_user: TokenData = Depends(require_auth)):
+    try:
+        return create_from_conversation(
+            req.conversation_id, current_user.user_id, category=req.category
+        )
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Este chat pertence a outro usuário.")
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Chat não encontrado.")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get(
+    "/trs",
+    tags=["Esteira de Revisão"],
+    summary="Listar TRs (popula o Kanban)",
+    description=(
+        "Lista os TRs gerados, mais recentes primeiro. Suporta filtro por `status` "
+        "(`pending`/`approved`/`rejected`), busca textual `q` (título/categoria) e "
+        "paginação (`page`, `page_size`). Itens vêm sem os campos pesados "
+        "(`fullContent`, `analysisSummary`, `sourceDocuments`) — use `GET /trs/{id}` "
+        "para os detalhes completos."
+    ),
+)
+def list_trs(
+    status: str | None = Query(default=None, pattern="^(pending|approved|rejected)$"),
+    q: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: TokenData = Depends(require_auth),
+):
+    return REVIEW_STORE.list_trs(status=status, q=q, page=page, page_size=page_size)
+
+
+@app.get(
+    "/trs/{tr_id}",
+    tags=["Esteira de Revisão"],
+    summary="Detalhes completos de um TR",
+    description=(
+        "Retorna o TR completo, incluindo `fullContent` (texto/markdown), "
+        "`analysisSummary` e `sourceDocuments` (rastreabilidade)."
+    ),
+)
+def get_tr(tr_id: int, current_user: TokenData = Depends(require_auth)):
+    return _require_tr(tr_id)
+
+
+@app.patch(
+    "/trs/{tr_id}/approve",
+    tags=["Esteira de Revisão"],
+    summary="Aprovar um TR",
+    description=(
+        "Marca o TR como `approved` e registra o revisor (obtido do token) e a "
+        "data/hora. Move o card para a coluna 'Aprovados'."
+    ),
+)
+def approve_tr(tr_id: int, current_user: TokenData = Depends(require_auth)):
+    tr = REVIEW_STORE.approve(tr_id, current_user.user_id)
+    if tr is None:
+        raise HTTPException(status_code=404, detail="TR não encontrado.")
+    return tr
+
+
+@app.patch(
+    "/trs/{tr_id}/reject",
+    tags=["Esteira de Revisão"],
+    summary="Reprovar um TR",
+    description=(
+        "Marca o TR como `rejected`, com `rejectionReason` obrigatório, e registra o "
+        "revisor e a data/hora. Move o card para 'Em Ajuste'."
+    ),
+)
+def reject_tr(
+    tr_id: int,
+    req: RejectTRRequest,
+    current_user: TokenData = Depends(require_auth),
+):
+    tr = REVIEW_STORE.reject(tr_id, current_user.user_id, req.reason)
+    if tr is None:
+        raise HTTPException(status_code=404, detail="TR não encontrado.")
+    return tr
+
+
+@app.post(
+    "/trs/{tr_id}/chat",
+    tags=["Esteira de Revisão"],
+    summary="Chat de correção de um TR",
+    description=(
+        "Endpoint focado em ajustar um TR (em geral, um que foi reprovado). A "
+        "instrução do usuário é aplicada ao documento pela IA. Quando um tópico é "
+        "alterado, o backend gera uma **nova versão** e devolve o TR para a fila "
+        "(`pending`).\n\n"
+        "Resposta: `{ message, changed_sections, tr }`. Se a IA não identificar o "
+        "que ajustar, `changed_sections` vem vazio e nada é versionado."
+    ),
+)
+def correct_tr(
+    tr_id: int,
+    req: CorrectionChatRequest,
+    current_user: TokenData = Depends(require_auth),
+):
+    result = apply_correction(tr_id, req.message)
+    if result is None:
+        raise HTTPException(status_code=404, detail="TR não encontrado.")
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Document endpoints
 # ---------------------------------------------------------------------------
 @app.post(
@@ -411,4 +590,4 @@ def remover_doc(nome_arquivo: str):
 # ---------------------------------------------------------------------------
 @app.get("/health", tags=["Sistema"], summary="Verificar saúde da API")
 def health():
-    return {"ok": True, "version": "3.2.0"}
+    return {"ok": True, "version": "3.3.0"}
