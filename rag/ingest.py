@@ -7,7 +7,7 @@ import json
 from utils.loaders import load_text, extract_template
 
 OLLAMA_BASE = "http://localhost:11434"
-EMBED_MODEL = "nomic-embed-text"
+EMBED_MODEL = "bge-m3" # mudar modelo
 CHROMA_DIR = "data/chroma"
 COLLECTION = "termos_referencia"
 TEMPLATES_DIR = Path("data/templates")

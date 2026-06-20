@@ -12,7 +12,7 @@ import requests
 
 from .ingest import OLLAMA_BASE
 
-LLM_MODEL = "mistral"
+LLM_MODEL = "qwen2.5:3b" # MUDAR PARA O OUTRO MODELO -- OLHAR CHAT DO GEMINI
 
 
 def ollama_generate(prompt: str, model: str = LLM_MODEL) -> str:

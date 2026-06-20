@@ -50,6 +50,10 @@ from rag.review_store import (
     apply_correction,
 )
 
+# from auth.auth import hash_password
+#
+# print(hash_password("senha123"))
+
 app = FastAPI(
     title="FSPH - RAG + Ollama API",
     description=(
